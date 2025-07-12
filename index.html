@@ -1,3 +1,1599 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>すうじダンジョン</title>
+<script type="importmap">
+  {"imports": {"three": "https://unpkg.com/three@0.160.1/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.1/examples/jsm/"}}
+</script>
+<script type="module">
+let scene, renderer;
+const [width,height,w] = [700,500,320];
+let camera, light;
+let p = new THREE.Vector3(6,0,6);
+let f = new THREE.Vector3(1,0,0);
+let status = "start", cnt = 0;
+let map;
+
+// ゲーム状態管理
+let gameState = "start";
+let selectedLevel = "ちゅうきゅう";
+let mapSize = 13;
+
+// 宝箱関連の変数
+let treasures = [];
+let foundTreasures = 0;
+let totalTreasures = 0;
+let gameCleared = false;
+
+// 2D表示関連の変数
+let show2D = false;
+let canvas2D;
+let ctx2D;
+
+// 回転制御変数
+let targetRotation = 0;
+let currentRotation = 0;
+let isRotating = false;
+
+// 移動制御変数
+let isMoving = false;
+let moveStartPos = new THREE.Vector3();
+let moveTargetPos = new THREE.Vector3();
+
+// メッセージ表示関連の変数
+let messageElement;
+let messageTimeout;
+
+// 数字マッチングゲーム関連の変数
+let matchingTargetNumber = 10;
+let matchingSelectedCard = null;
+let matchingGameNumbers = [];
+let matchingMatchedPairs = 0;
+let matchingTotalPairs = 5;
+let currentTreasureData = null;
+
+// マッピング機能関連の変数
+let visitedMap;
+let mapCanvas;
+let mapCtx;
+let mapCanvasSize = 250;
+let showMapping = false;
+
+// アニメーション関連の変数
+let activeAnimations = new Map();
+
+import * as THREE from "three";
+import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
+
+// 宝箱の状態定義
+const TREASURE_STATES = {
+  UNDISCOVERED: 'undiscovered',
+  FOUND: 'found',
+  PREPARING: 'preparing',
+  OPENING: 'opening',
+  OPENED: 'opened'
+};
+
+// レベル設定を取得する関数
+function getLevelSettings(level) {
+  switch(level) {
+    case "しょきゅう":
+      return { size: 11, startPos: [5, 5], digPos: [8, 8] };
+    case "ちゅうきゅう":
+      return { size: 13, startPos: [6, 6], digPos: [10, 10] };
+    case "じょうきゅう":
+      return { size: 19, startPos: [9, 9], digPos: [16, 16] };
+    default:
+      return { size: 13, startPos: [6, 6], digPos: [10, 10] };
+  }
+}
+
+// レベルを選択する関数
+function selectLevel(level) {
+  selectedLevel = level;
+  const settings = getLevelSettings(level);
+  mapSize = settings.size;
+  
+  document.querySelectorAll('.level-button').forEach(btn => {
+    btn.classList.remove('selected');
+  });
+  document.getElementById(level + 'Button').classList.add('selected');
+  document.getElementById('selectedLevel').textContent = level;
+}
+
+// ゲームを初期化する関数
+function initializeGame() {
+  const settings = getLevelSettings(selectedLevel);
+  mapSize = settings.size;
+  
+  map = new Array(mapSize).fill(null).map(() => new Array(mapSize));
+  visitedMap = new Array(mapSize).fill(null).map(() => new Array(mapSize).fill(false));
+  
+  treasures.forEach(treasure => {
+    scene.remove(treasure.group);
+  });
+  treasures = [];
+  foundTreasures = 0;
+  totalTreasures = 0;
+  gameCleared = false;
+  
+  p.set(settings.startPos[0], 0, settings.startPos[1]);
+  f.set(1, 0, 0);
+  currentRotation = 0;
+  targetRotation = 0;
+  isRotating = false;
+  isMoving = false;
+  
+  visitedMap[Math.round(p.x)][Math.round(p.z)] = true;
+  
+  show2D = false;
+  if (canvas2D) {
+    canvas2D.style.display = 'none';
+  }
+  document.getElementById("render3D").style.display = 'block';
+  document.getElementById("viewMode").innerText = '2Dひょうじにきりかえ (H)';
+  
+  showMapping = false;
+  updateMappingVisibility();
+  
+  activeAnimations.clear();
+  
+  generateMaze();
+  updateMappingDisplay();
+  
+  document.getElementById("total").innerText = totalTreasures;
+  document.getElementById("found").innerText = foundTreasures;
+  document.getElementById("status").innerText = "たからばこをさがしてください！";
+  document.getElementById("status").style.color = "#333";
+  document.getElementById("status").style.fontSize = "16px";
+  document.getElementById("currentLevel").innerText = selectedLevel;
+}
+
+// 迷路を生成する関数
+function generateMaze() {
+  const settings = getLevelSettings(selectedLevel);
+  
+  scene.children = scene.children.filter(child => 
+    child.type !== 'Mesh' || !child.material || child.material.color.getHex() !== 0xFFFFF0
+  );
+  
+  for (let x=0; x<mapSize; x++) {
+    for (let y=0; y<mapSize; y++) {
+      map[x][y] = -1;
+      if ((x > 0)&&(x < mapSize-1)&&(y > 0)&&(y < mapSize-1)) map[x][y] = 1;
+    }
+  }
+
+  dig(settings.digPos[0], settings.digPos[1]);
+  const blocks = new Array();
+  
+  for (let x=0; x<mapSize; x++) {
+    for (let y=0; y<mapSize; y++) {
+      if (map[x][y] == 1) {
+        const box = new THREE.BoxGeometry(w-1,w-1,w-1);
+        box.translate(x*w,0,y*w);
+        blocks.push(box);
+      } else if (map[x][y] == 0) {
+        const dir = [
+          y > 0 ? map[x][y-1] : 1,
+          y < mapSize-1 ? map[x][y+1] : 1,
+          x > 0 ? map[x-1][y] : 1,
+          x < mapSize-1 ? map[x+1][y] : 1
+        ];
+        let wallCount = 0;
+        dir.forEach(d => {if (d == 1) wallCount++;});
+        
+        if (wallCount == 3) {
+          createTreasureBox(x, y);
+          totalTreasures++;
+        }
+      }
+    }
+  }
+
+  if (blocks.length > 0) {
+    const geometry = BufferGeometryUtils.mergeGeometries(blocks);
+    const material = new THREE.MeshPhongMaterial({color: "#FFFFF0"});
+    const mesh = new THREE.Mesh(geometry,material);
+    scene.add(mesh);
+  }
+}
+
+// ゲームを開始する関数
+function startGame() {
+  gameState = "playing";
+  status = "ready";
+  
+  document.getElementById("startScreen").style.display = 'none';
+  document.getElementById("gameScreen").style.display = 'block';
+  
+  initializeGame();
+}
+
+// スタート画面に戻る関数
+function returnToStart() {
+  gameState = "start";
+  status = "start";
+  
+  document.getElementById("gameScreen").style.display = 'none';
+  document.getElementById("startScreen").style.display = 'block';
+  document.getElementById("matchingGameScreen").style.display = 'none';
+  
+  if (messageElement) {
+    messageElement.remove();
+    messageElement = null;
+  }
+  if (messageTimeout) {
+    clearTimeout(messageTimeout);
+  }
+}
+
+// 宝箱を作成する関数
+function createTreasureBox(x, y) {
+  const treasureGroup = new THREE.Group();
+  
+  const boxGeometry = new THREE.BoxGeometry(w/4, w/4, w/4);
+  const boxMaterial = new THREE.MeshPhongMaterial({color: "#8B4513"});
+  const box = new THREE.Mesh(boxGeometry, boxMaterial);
+  box.position.set(0, w/8, 0);
+  treasureGroup.add(box);
+  
+  const lidGeometry = new THREE.BoxGeometry(w/4 + 10, w/8, w/4 + 10);
+  const lidMaterial = new THREE.MeshPhongMaterial({color: "#A0522D"});
+  const lid = new THREE.Mesh(lidGeometry, lidMaterial);
+  lid.position.set(0, w/4, 0);
+  treasureGroup.add(lid);
+  
+  const decorGeometry = new THREE.BoxGeometry(w/6, w/12, w/6);
+  const decorMaterial = new THREE.MeshPhongMaterial({color: "#FFD700"});
+  const decor = new THREE.Mesh(decorGeometry, decorMaterial);
+  decor.position.set(0, w/4 + w/16, 0);
+  treasureGroup.add(decor);
+  
+  treasureGroup.position.set(x * w, 0, y * w);
+  
+  const treasureData = {
+    group: treasureGroup,
+    box: box,
+    lid: lid,
+    decor: decor,
+    x: x,
+    y: y,
+    state: TREASURE_STATES.UNDISCOVERED,
+    originalPosition: treasureGroup.position.clone(),
+    originalLidPosition: lid.position.clone(),
+    originalDecorPosition: decor.position.clone(),
+    originalLidRotation: lid.rotation.clone(),
+    originalDecorRotation: decor.rotation.clone(),
+    treasureContents: null,
+    colorChanged: false // 色変更フラグを追加
+  };
+  
+  treasures.push(treasureData);
+  scene.add(treasureGroup);
+  
+  return treasureData;
+}
+
+// 宝箱開封シーケンス（修正版）
+function startTreasureOpeningSequence(treasure) {
+  if (treasure.state !== TREASURE_STATES.FOUND) {
+    console.warn("宝箱の状態が不正です:", treasure.state);
+    return;
+  }
+  
+  console.log("=== 宝箱開封シーケンス開始 ===", treasure.x, treasure.y);
+  treasure.state = TREASURE_STATES.PREPARING;
+  
+  // 既存のアニメーションを停止
+  if (activeAnimations.has(treasure)) {
+    clearTimeout(activeAnimations.get(treasure));
+  }
+  
+  // 位置を固定
+  treasure.group.position.copy(treasure.originalPosition);
+  treasure.group.position.y = w/4;
+  
+  // フェーズ1: 発見エフェクト（1秒）
+  showDiscoveryEffect(treasure);
+  
+  // フェーズ2: 色変更（2秒後）
+  const phase2Timer = setTimeout(() => {
+    console.log("色変更フェーズ開始");
+    changeTreasureColor(treasure);
+    
+    // フェーズ3: 開封アニメーション（0.5秒後）
+    const phase3Timer = setTimeout(() => {
+      console.log("開封アニメーション開始");
+      treasure.state = TREASURE_STATES.OPENING;
+      startOpeningAnimation(treasure);
+    }, 500);
+    
+    activeAnimations.set(treasure, phase3Timer);
+  }, 2000);
+  
+  activeAnimations.set(treasure, phase2Timer);
+}
+
+// 発見エフェクト
+function showDiscoveryEffect(treasure) {
+  console.log("発見エフェクト開始");
+  
+  // 光る効果
+  treasure.group.children.forEach(child => {
+    if (child.material) {
+      child.material.emissive = new THREE.Color(0x444400);
+    }
+  });
+  
+  // スケールアニメーション
+  const originalScale = treasure.group.scale.clone();
+  treasure.group.scale.set(1.3, 1.3, 1.3);
+  
+  setTimeout(() => {
+    treasure.group.scale.copy(originalScale);
+    console.log("発見エフェクト完了");
+  }, 1000);
+}
+
+// 宝箱の色を変更（新規追加）
+function changeTreasureColor(treasure) {
+  if (treasure.colorChanged) return;
+  
+  console.log("宝箱の色を変更");
+  treasure.colorChanged = true;
+  
+  // 宝箱の色を明るくする
+  treasure.box.material.color.setHex(0xCD853F); // より明るい茶色
+  treasure.box.material.emissive.setHex(0x222200); // 少し光らせる
+  
+  // 蓋の色も少し明るくする
+  treasure.lid.material.color.setHex(0xB8860B); // ダークゴールデンロッド
+  
+  // 装飾をより光らせる
+  treasure.decor.material.emissive.setHex(0x333300);
+}
+
+// 開封アニメーション
+function startOpeningAnimation(treasure) {
+  if (treasure.state !== TREASURE_STATES.OPENING) {
+    console.warn("開封アニメーション: 状態が不正です", treasure.state);
+    return;
+  }
+  
+  const animationData = {
+    treasure: treasure,
+    startTime: Date.now(),
+    duration: 3000,
+    phase: 'lid_opening'
+  };
+  
+  // 宝箱の中身を事前に作成
+  createTreasureContents(treasure);
+  
+  // アニメーションループを開始
+  animateOpening(animationData);
+}
+
+// アニメーションループ
+function animateOpening(animationData) {
+  const { treasure, startTime, duration } = animationData;
+  const elapsed = Date.now() - startTime;
+  const progress = Math.min(elapsed / duration, 1);
+  
+  if (treasure.state !== TREASURE_STATES.OPENING) {
+    console.log("アニメーション中断: 状態変更", treasure.state);
+    return;
+  }
+  
+  if (animationData.phase === 'lid_opening') {
+    // 蓋を開く（0-60%）
+    const lidProgress = Math.min(progress / 0.6, 1);
+    const easeProgress = easeOutBounce(lidProgress);
+    
+    // 蓋の回転
+    treasure.lid.rotation.x = -Math.PI/2 * easeProgress;
+    treasure.lid.position.set(
+      0,
+      treasure.originalLidPosition.y + (w/16) * easeProgress,
+      -w/8 * easeProgress
+    );
+    
+    // 装飾も一緒に移動
+    treasure.decor.rotation.x = -Math.PI/2 * easeProgress;
+    treasure.decor.position.set(
+      0,
+      treasure.originalDecorPosition.y + (w/8) * easeProgress,
+      -w/8 * easeProgress
+    );
+    
+    if (progress >= 0.6) {
+      animationData.phase = 'contents_appearing';
+      console.log("中身出現フェーズ開始");
+    }
+  }
+  
+  if (animationData.phase === 'contents_appearing') {
+    // 中身出現（60-100%）
+    const contentsProgress = (progress - 0.6) / 0.4;
+    
+    if (treasure.treasureContents) {
+      treasure.treasureContents.coins.forEach((coin, index) => {
+        const delay = index * 0.3;
+        const coinProgress = Math.max(0, Math.min(1, (contentsProgress - delay) / (1 - delay)));
+        const scale = easeOutBounce(coinProgress);
+        coin.scale.set(scale, scale, scale);
+        
+        // 落下アニメーション
+        const fallProgress = easeOutBounce(coinProgress);
+        coin.position.y = treasure.treasureContents.originalPositions[index].y + (w/4) * (1 - fallProgress);
+      });
+      
+      // パーティクル
+      if (treasure.treasureContents.particles) {
+        treasure.treasureContents.particles.material.opacity = contentsProgress * 0.8;
+      }
+    }
+  }
+  
+  // アニメーション継続または完了
+  if (progress < 1) {
+    requestAnimationFrame(() => animateOpening(animationData));
+  } else {
+    completeOpening(treasure);
+  }
+}
+
+// 開封完了（修正版）
+function completeOpening(treasure) {
+  console.log("=== 宝箱開封完了 ===", treasure.x, treasure.y);
+  treasure.state = TREASURE_STATES.OPENED;
+  activeAnimations.delete(treasure);
+  
+  // 最終的な色調整（既に色変更済みなので微調整のみ）
+  if (treasure.colorChanged) {
+    treasure.box.material.emissive.setHex(0x444400); // より強い発光
+    treasure.lid.material.emissive.setHex(0x222200);
+    treasure.decor.material.emissive.setHex(0x555500);
+  }
+}
+
+// 宝箱の中身を作成
+function createTreasureContents(treasure) {
+  if (treasure.treasureContents) return;
+  
+  console.log("宝箱の中身を作成");
+  
+  const coins = [];
+  const originalPositions = [];
+  
+  // 3つの金貨
+  for (let i = 0; i < 3; i++) {
+    const coinGeometry = new THREE.SphereGeometry(w/16, 8, 6);
+    const coinMaterial = new THREE.MeshPhongMaterial({
+      color: "#FFD700",
+      emissive: "#444400",
+      metalness: 0.8,
+      roughness: 0.2
+    });
+    const coin = new THREE.Mesh(coinGeometry, coinMaterial);
+    
+    const angle = (i * Math.PI * 2) / 3;
+    const originalPos = {
+      x: Math.cos(angle) * w/12,
+      y: w/6 + i * w/20,
+      z: Math.sin(angle) * w/12
+    };
+    
+    coin.position.set(originalPos.x, originalPos.y, originalPos.z);
+    coin.scale.set(0, 0, 0); // 初期は非表示
+    
+    originalPositions.push(originalPos);
+    coins.push(coin);
+    treasure.group.add(coin);
+  }
+  
+  // パーティクル
+  const particleGeometry = new THREE.BufferGeometry();
+  const particleCount = 20;
+  const positions = new Float32Array(particleCount * 3);
+  
+  for (let i = 0; i < particleCount; i++) {
+    positions[i * 3] = (Math.random() - 0.5) * w/2;
+    positions[i * 3 + 1] = Math.random() * w/2;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * w/2;
+  }
+  
+  particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  
+  const particleMaterial = new THREE.PointsMaterial({
+    color: "#FFD700",
+    size: 5,
+    transparent: true,
+    opacity: 0
+  });
+  
+  const particles = new THREE.Points(particleGeometry, particleMaterial);
+  treasure.group.add(particles);
+  
+  treasure.treasureContents = {
+    coins: coins,
+    originalPositions: originalPositions,
+    particles: particles
+  };
+}
+
+// イージング関数
+function easeOutBounce(t) {
+  if (t < 1 / 2.75) {
+    return 7.5625 * t * t;
+  } else if (t < 2 / 2.75) {
+    return 7.5625 * (t -= 1.5 / 2.75) * t + 0.75;
+  } else if (t < 2.5 / 2.75) {
+    return 7.5625 * (t -= 2.25 / 2.75) * t + 0.9375;
+  } else {
+    return 7.5625 * (t -= 2.625 / 2.75) * t + 0.984375;
+  }
+}
+
+// メッセージを表示する関数
+function showMessage(text, duration = 3000) {
+  if (messageElement) {
+    messageElement.remove();
+  }
+  if (messageTimeout) {
+    clearTimeout(messageTimeout);
+  }
+  
+  messageElement = document.createElement('div');
+  messageElement.className = 'treasure-message';
+  messageElement.textContent = text;
+  document.body.appendChild(messageElement);
+  
+  setTimeout(() => {
+    messageElement.classList.add('show');
+  }, 10);
+  
+  messageTimeout = setTimeout(() => {
+    if (messageElement) {
+      messageElement.classList.remove('show');
+      setTimeout(() => {
+        if (messageElement) {
+          messageElement.remove();
+          messageElement = null;
+        }
+      }, 500);
+    }
+  }, duration);
+}
+
+// 宝箱を見つけた時のアニメーション
+function findTreasure(treasure) {
+  if (treasure.state !== TREASURE_STATES.UNDISCOVERED) return;
+  
+  currentTreasureData = treasure;
+  startMatchingGame();
+}
+
+// 数字マッチングゲームを開始
+function startMatchingGame() {
+  gameState = "matching";
+  matchingTargetNumber = Math.floor(Math.random() * 11) + 10;
+  
+  document.getElementById("gameScreen").style.display = 'none';
+  document.getElementById("matchingGameScreen").style.display = 'block';
+  
+  matchingGenerateNumbers();
+  matchingShowGameScreen();
+}
+
+// 数字マッチングゲームから戻る
+function returnFromMatchingGame() {
+  console.log("=== 数字マッチングゲーム完了 ===");
+  
+  // ダンジョンゲームに戻る
+  gameState = "playing";
+  document.getElementById("matchingGameScreen").style.display = 'none';
+  document.getElementById("gameScreen").style.display = 'block';
+  
+  // 宝箱発見処理
+  if (currentTreasureData && currentTreasureData.state === TREASURE_STATES.UNDISCOVERED) {
+    console.log("宝箱を発見状態に変更:", currentTreasureData.x, currentTreasureData.y);
+    
+    // 状態を発見済みに変更
+    currentTreasureData.state = TREASURE_STATES.FOUND;
+    foundTreasures++;
+    
+    // メッセージ表示
+    showMessage('🎉 たからばこ はっけん！ 🎉', 2500);
+    
+    // UI更新
+    document.getElementById("found").innerText = foundTreasures;
+    document.getElementById("total").innerText = totalTreasures;
+    updateMappingDisplay();
+    
+    // 1秒後に開封シーケンス開始
+    setTimeout(() => {
+      startTreasureOpeningSequence(currentTreasureData);
+    }, 1000);
+    
+    // 全ての宝箱を見つけた場合
+    if (foundTreasures >= totalTreasures && !gameCleared) {
+      gameCleared = true;
+      gameState = "cleared";
+      
+      setTimeout(() => {
+        document.getElementById("status").innerText = "🎉 クリア！おめでとうございます！ 🎉";
+        document.getElementById("status").style.color = "#FFD700";
+        document.getElementById("status").style.fontSize = "20px";
+        
+        treasures.forEach(t => {
+          if (t.state === TREASURE_STATES.OPENED) {
+            t.group.children.forEach(child => {
+              if (child.material) {
+                child.material.emissive = new THREE.Color(Math.random(), Math.random(), Math.random());
+              }
+            });
+          }
+        });
+        
+        showMessage('🏆 すべてのたからばこをはっけん！ゲームクリア！ 🏆', 3000);
+        
+        setTimeout(() => {
+          returnToStart();
+        }, 5000);
+      }, 5000); // 開封完了を待つため時間を延長
+    }
+    
+    currentTreasureData = null;
+  }
+}
+
+// 数字マッチングゲーム関連の関数群
+function matchingGenerateNumbers() {
+  matchingGameNumbers = [];
+  matchingMatchedPairs = 0;
+  matchingSelectedCard = null;
+  
+  let usedNumbers = [];
+  let attempts = 0;
+  const maxAttempts = 100;
+  
+  while (matchingGameNumbers.length < 10 && attempts < maxAttempts) {
+    attempts++;
+    
+    let num1 = Math.floor(Math.random() * (matchingTargetNumber - 1)) + 1;
+    let num2 = matchingTargetNumber - num1;
+    
+    if (!usedNumbers.includes(num1) && !usedNumbers.includes(num2)) {
+      if (num1 !== num2) {
+        matchingGameNumbers.push(num1, num2);
+        usedNumbers.push(num1, num2);
+      }
+    }
+    
+    if (attempts >= maxAttempts - 10 && matchingGameNumbers.length < 10) {
+      matchingTargetNumber = Math.floor(Math.random() * 11) + 15;
+      usedNumbers = [];
+      matchingGameNumbers = [];
+      attempts = 0;
+    }
+  }
+  
+  while (matchingGameNumbers.length < 10) {
+    let num1 = Math.floor(Math.random() * (matchingTargetNumber - 1)) + 1;
+    let num2 = matchingTargetNumber - num1;
+    
+    if (num1 !== num2) {
+      matchingGameNumbers.push(num1, num2);
+    }
+  }
+  
+  for (let i = matchingGameNumbers.length - 1; i > 0; i--) {
+    let j = Math.floor(Math.random() * (i + 1));
+    [matchingGameNumbers[i], matchingGameNumbers[j]] = [matchingGameNumbers[j], matchingGameNumbers[i]];
+  }
+}
+
+function matchingShowGameScreen() {
+  document.getElementById('matchingTargetNumber').textContent = matchingTargetNumber;
+  document.getElementById('matchingRemainingPairs').textContent = matchingTotalPairs;
+  document.getElementById('matchingClearMessage').style.display = 'none';
+  
+  matchingDisplayNumbers();
+}
+
+function matchingDisplayNumbers() {
+  const grid = document.getElementById('matchingNumberGrid');
+  grid.innerHTML = '';
+  
+  matchingGameNumbers.forEach((num, index) => {
+    const card = document.createElement('div');
+    card.className = 'matching-number-card';
+    card.textContent = num;
+    card.onclick = () => matchingSelectCard(index);
+    card.id = `matching-card-${index}`;
+    grid.appendChild(card);
+  });
+}
+
+function matchingSelectCard(index) {
+  const card = document.getElementById(`matching-card-${index}`);
+  
+  if (card.classList.contains('matching-matched')) {
+    return;
+  }
+  
+  if (matchingSelectedCard === index) {
+    card.classList.remove('matching-selected');
+    matchingSelectedCard = null;
+    return;
+  }
+  
+  if (matchingSelectedCard === null) {
+    card.classList.add('matching-selected');
+    matchingSelectedCard = index;
+    return;
+  }
+  
+  const firstCard = document.getElementById(`matching-card-${matchingSelectedCard}`);
+  const firstNumber = matchingGameNumbers[matchingSelectedCard];
+  const secondNumber = matchingGameNumbers[index];
+  
+  if (firstNumber + secondNumber === matchingTargetNumber) {
+    setTimeout(() => {
+      card.classList.add('matching-matched');
+      firstCard.classList.add('matching-matched');
+      
+      setTimeout(() => {
+        card.style.visibility = 'hidden';
+        firstCard.style.visibility = 'hidden';
+        matchingMatchedPairs++;
+        document.getElementById('matchingRemainingPairs').textContent = matchingTotalPairs - matchingMatchedPairs;
+        
+        if (matchingMatchedPairs === matchingTotalPairs) {
+          document.getElementById('matchingClearMessage').style.display = 'block';
+          
+          setTimeout(() => {
+            returnFromMatchingGame();
+          }, 3000);
+        }
+      }, 800);
+    }, 100);
+  } else {
+    card.classList.add('matching-selected');
+    setTimeout(() => {
+      card.classList.remove('matching-selected');
+      firstCard.classList.remove('matching-selected');
+    }, 1000);
+  }
+  
+  matchingSelectedCard = null;
+}
+
+// 移動可能かチェックする関数
+function canMoveTo(x, z) {
+  if (x < 0 || x >= mapSize || z < 0 || z >= mapSize) return false;
+  return map[x][z] == 0;
+}
+
+// 2D表示を作成
+function create2DCanvas() {
+  canvas2D = document.createElement('canvas');
+  canvas2D.width = 350;
+  canvas2D.height = 350;
+  canvas2D.style.border = '2px solid #333';
+  canvas2D.style.display = 'none';
+  canvas2D.style.backgroundColor = '#f0f0f0';
+  ctx2D = canvas2D.getContext('2d');
+  document.getElementById("render2D").appendChild(canvas2D);
+}
+
+// マッピング表示を作成
+function createMappingCanvas() {
+  mapCanvas = document.createElement('canvas');
+  mapCanvas.width = mapCanvasSize;
+  mapCanvas.height = mapCanvasSize;
+  mapCanvas.style.border = '2px solid #333';
+  mapCanvas.style.backgroundColor = '#2a2a2a';
+  mapCanvas.style.borderRadius = '5px';
+  mapCtx = mapCanvas.getContext('2d');
+  document.getElementById("mappingDisplay").appendChild(mapCanvas);
+}
+
+// マッピング表示の可視性を更新
+function updateMappingVisibility() {
+  const mappingArea = document.querySelector('.mapping-area');
+  if (mappingArea) {
+    mappingArea.style.display = showMapping ? 'block' : 'none';
+  }
+  
+  const mappingButton = document.getElementById("mappingMode");
+  if (mappingButton) {
+    mappingButton.innerText = showMapping ? 'マップをかくす (M)' : 'マップをひょうじ (M)';
+  }
+}
+
+// マッピング表示を切り替え
+function toggleMapping() {
+  if (gameState !== "playing") return;
+  
+  showMapping = !showMapping;
+  updateMappingVisibility();
+}
+
+// マッピング表示を更新
+function updateMappingDisplay() {
+  if (!mapCtx || !showMapping) return;
+  
+  mapCtx.fillStyle = '#2a2a2a';
+  mapCtx.fillRect(0, 0, mapCanvasSize, mapCanvasSize);
+  
+  const scale = mapCanvasSize / mapSize;
+  
+  for (let x = 0; x < mapSize; x++) {
+    for (let y = 0; y < mapSize; y++) {
+      if (visitedMap[x][y] && map[x][y] === 0) {
+        mapCtx.fillStyle = '#87CEEB';
+        mapCtx.fillRect(x * scale, y * scale, scale, scale);
+      }
+    }
+  }
+  
+  treasures.forEach(treasure => {
+    const treasureX = treasure.x * scale + scale/2;
+    const treasureY = treasure.y * scale + scale/2;
+    
+    if (treasure.state === TREASURE_STATES.OPENED || treasure.state === TREASURE_STATES.FOUND || treasure.state === TREASURE_STATES.PREPARING || treasure.state === TREASURE_STATES.OPENING) {
+      mapCtx.fillStyle = '#FFD700';
+      drawStar(mapCtx, treasureX, treasureY, scale/3);
+    } else if (visitedMap[treasure.x][treasure.y]) {
+      mapCtx.fillStyle = '#8B4513';
+      mapCtx.fillRect(treasureX - scale/4, treasureY - scale/4, scale/2, scale/2);
+    }
+  });
+  
+  const playerX = p.x * scale + scale/2;
+  const playerY = p.z * scale + scale/2;
+  
+  mapCtx.fillStyle = '#FF4444';
+  mapCtx.beginPath();
+  mapCtx.arc(playerX, playerY, scale/3, 0, 2 * Math.PI);
+  mapCtx.fill();
+  
+  mapCtx.strokeStyle = '#FFFFFF';
+  mapCtx.lineWidth = 2;
+  mapCtx.beginPath();
+  mapCtx.moveTo(playerX, playerY);
+  mapCtx.lineTo(playerX + f.x * scale/2, playerY + f.z * scale/2);
+  mapCtx.stroke();
+  
+  const arrowSize = scale/6;
+  const angle = Math.atan2(f.z, f.x);
+  const arrowX = playerX + f.x * scale/2;
+  const arrowY = playerY + f.z * scale/2;
+  
+  mapCtx.beginPath();
+  mapCtx.moveTo(arrowX, arrowY);
+  mapCtx.lineTo(arrowX - arrowSize * Math.cos(angle - Math.PI/6), arrowY - arrowSize * Math.sin(angle - Math.PI/6));
+  mapCtx.moveTo(arrowX, arrowY);
+  mapCtx.lineTo(arrowX - arrowSize * Math.cos(angle + Math.PI/6), arrowY - arrowSize * Math.sin(angle + Math.PI/6));
+  mapCtx.stroke();
+}
+
+// 星を描画する関数
+function drawStar(ctx, x, y, radius) {
+  const spikes = 5;
+  const outerRadius = radius;
+  const innerRadius = radius * 0.4;
+  
+  ctx.beginPath();
+  for (let i = 0; i < spikes * 2; i++) {
+    const angle = (i * Math.PI) / spikes;
+    const r = i % 2 === 0 ? outerRadius : innerRadius;
+    const starX = x + Math.cos(angle) * r;
+    const starY = y + Math.sin(angle) * r;
+    
+    if (i === 0) {
+      ctx.moveTo(starX, starY);
+    } else {
+      ctx.lineTo(starX, starY);
+    }
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+// 2D表示を更新
+function update2D() {
+  if (!show2D) return;
+  
+  ctx2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
+  
+  const scale = canvas2D.width / mapSize;
+  
+  for (let x = 0; x < mapSize; x++) {
+    for (let y = 0; y < mapSize; y++) {
+      if (map[x][y] == 1) {
+        ctx2D.fillStyle = '#333';
+        ctx2D.fillRect(x * scale, y * scale, scale, scale);
+      } else if (map[x][y] == 0) {
+        ctx2D.fillStyle = '#fff';
+        ctx2D.fillRect(x * scale, y * scale, scale, scale);
+      }
+    }
+  }
+  
+  treasures.forEach(treasure => {
+    if (treasure.state === TREASURE_STATES.OPENED) {
+      ctx2D.fillStyle = '#FFD700';
+      ctx2D.beginPath();
+      ctx2D.arc(treasure.x * scale + scale/2, treasure.y * scale + scale/2, scale/2.5, 0, 2 * Math.PI);
+      ctx2D.fill();
+      
+      ctx2D.fillStyle = '#FFFF00';
+      ctx2D.beginPath();
+      ctx2D.arc(treasure.x * scale + scale/2, treasure.y * scale + scale/2, scale/4, 0, 2 * Math.PI);
+      ctx2D.fill();
+      
+      ctx2D.fillStyle = '#FF4500';
+      ctx2D.beginPath();
+      ctx2D.arc(treasure.x * scale + scale/2, treasure.y * scale + scale/2, scale/8, 0, 2 * Math.PI);
+      ctx2D.fill();
+    } else if (treasure.state === TREASURE_STATES.FOUND || treasure.state === TREASURE_STATES.PREPARING || treasure.state === TREASURE_STATES.OPENING) {
+      ctx2D.fillStyle = treasure.colorChanged ? '#CD853F' : '#8B4513';
+      ctx2D.fillRect(treasure.x * scale + scale/4, treasure.y * scale + scale/4, scale/2, scale/2);
+      ctx2D.strokeStyle = '#FFD700';
+      ctx2D.lineWidth = 2;
+      ctx2D.strokeRect(treasure.x * scale + scale/4, treasure.y * scale + scale/4, scale/2, scale/2);
+    } else {
+      ctx2D.fillStyle = '#8B4513';
+      ctx2D.fillRect(treasure.x * scale + scale/4, treasure.y * scale + scale/4, scale/2, scale/2);
+    }
+  });
+  
+  ctx2D.fillStyle = '#FF0000';
+  ctx2D.fillRect(p.x * scale + scale/3, p.z * scale + scale/3, scale/3, scale/3);
+  
+  ctx2D.strokeStyle = '#FF0000';
+  ctx2D.lineWidth = 3;
+  ctx2D.beginPath();
+  ctx2D.moveTo(p.x * scale + scale/2, p.z * scale + scale/2);
+  ctx2D.lineTo((p.x + f.x) * scale + scale/2, (p.z + f.z) * scale + scale/2);
+  ctx2D.stroke();
+}
+
+// 2D表示の切り替え
+function toggle2D() {
+  if (gameState !== "playing") return;
+  
+  show2D = !show2D;
+  if (show2D) {
+    canvas2D.style.display = 'block';
+    document.getElementById("render3D").style.display = 'none';
+    document.getElementById("viewMode").innerText = '3Dひょうじにきりかえ (H)';
+  } else {
+    canvas2D.style.display = 'none';
+    document.getElementById("render3D").style.display = 'block';
+    document.getElementById("viewMode").innerText = '2Dひょうじにきりかえ (H)';
+  }
+}
+
+window.onload = async () => {
+  scene = new THREE.Scene();
+  renderer = new THREE.WebGLRenderer({antialias: true});
+  renderer.setSize(width,height);
+  document.getElementById("render3D").appendChild(renderer.domElement);
+  
+  camera = new THREE.PerspectiveCamera(60,width/height,1,5000);
+  light = new THREE.PointLight("#FFFFFF",1200,0,1);
+  scene.add(light);
+  
+  const ambientLight = new THREE.AmbientLight("#404040", 0.4);
+  scene.add(ambientLight);
+
+  create2DCanvas();
+  createMappingCanvas();
+
+  document.getElementById("startButton").addEventListener("click", startGame);
+  document.getElementById("しょきゅうButton").addEventListener("click", () => selectLevel("しょきゅう"));
+  document.getElementById("ちゅうきゅうButton").addEventListener("click", () => selectLevel("ちゅうきゅう"));
+  document.getElementById("じょうきゅうButton").addEventListener("click", () => selectLevel("じょうきゅう"));
+
+  document.addEventListener("keydown", event => {
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key) || 
+        event.key.toLowerCase() === "h" || event.key.toLowerCase() === "m") {
+      event.preventDefault();
+    }
+    
+    if (gameState === "playing" && status == "ready" && !isRotating && !isMoving) {
+      if (event.key == "ArrowRight") {
+        targetRotation = currentRotation + Math.PI/2;
+        isRotating = true;
+        status = "rotating";
+      }
+      if (event.key == "ArrowLeft") {
+        targetRotation = currentRotation - Math.PI/2;
+        isRotating = true;
+        status = "rotating";
+      }
+      if (event.key == "ArrowUp") {
+        const nextX = Math.round(p.x + f.x);
+        const nextZ = Math.round(p.z + f.z);
+        
+        if (canMoveTo(nextX, nextZ)) {
+          moveStartPos.copy(p);
+          moveTargetPos.set(nextX, p.y, nextZ);
+          isMoving = true;
+          status = "moving";
+        }
+      }
+    }
+    
+    if (event.key.toLowerCase() == "h") {
+      toggle2D();
+    }
+    
+    if (event.key.toLowerCase() == "m") {
+      toggleMapping();
+    }
+  });
+
+  update();
+}
+
+const dig = (x,y) => {
+  map[x][y] = 0;
+  const dir = [[-1,0],[1,0],[0,-1],[0,1]];
+  for (let i=dir.length-1; i>=0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [dir[i],dir[j]] = [dir[j],dir[i]];
+  }
+  for (let i=0; i<dir.length; i++) {
+    const [dx,dy] = dir[i];
+    const [tx1,ty1,tx2,ty2] = [x+dx,y+dy,x+dx*2,y+dy*2];
+    if (tx1 >= 0 && tx1 < mapSize && ty1 >= 0 && ty1 < mapSize &&
+        tx2 >= 0 && tx2 < mapSize && ty2 >= 0 && ty2 < mapSize &&
+        (map[tx1][ty1] == 1)&&(map[tx2][ty2] == 1)) {
+      map[tx1][ty1] = 0;
+      dig(tx2,ty2);
+    }
+  }
+}
+
+const update = () => {
+  if (gameState !== "playing") {
+    renderer.render(scene,camera);
+    window.requestAnimationFrame(update);
+    return;
+  }
+  
+  // 回転処理
+  if (status == "rotating" && isRotating) {
+    const rotationSpeed = Math.PI/40;
+    const diff = targetRotation - currentRotation;
+    
+    if (Math.abs(diff) > rotationSpeed) {
+      currentRotation += Math.sign(diff) * rotationSpeed;
+      f.x = Math.cos(currentRotation);
+      f.z = Math.sin(currentRotation);
+    } else {
+      currentRotation = targetRotation;
+      f.x = Math.cos(currentRotation);
+      f.z = Math.sin(currentRotation);
+      isRotating = false;
+      status = "ready";
+    }
+  }
+  
+  // 移動処理
+  if (status == "moving" && isMoving) {
+    const moveSpeed = 0.05;
+    const direction = new THREE.Vector3().subVectors(moveTargetPos, p);
+    const distance = direction.length();
+    
+    if (distance > moveSpeed) {
+      direction.normalize();
+      p.addScaledVector(direction, moveSpeed);
+    } else {
+      p.copy(moveTargetPos);
+      isMoving = false;
+      status = "ready";
+      
+      visitedMap[Math.round(p.x)][Math.round(p.z)] = true;
+      updateMappingDisplay();
+      
+      treasures.forEach(treasure => {
+        if (treasure.x == p.x && treasure.y == p.z && treasure.state === TREASURE_STATES.UNDISCOVERED) {
+          findTreasure(treasure);
+        }
+      });
+    }
+  }
+  
+  // 宝箱のアニメーション（状態ベース）
+  treasures.forEach(treasure => {
+    switch(treasure.state) {
+      case TREASURE_STATES.UNDISCOVERED:
+        // 未発見の宝箱は回転
+        treasure.group.rotation.y += 0.01;
+        break;
+        
+      case TREASURE_STATES.FOUND:
+        // 発見済みの宝箱は軽く光る
+        treasure.group.position.y = treasure.originalPosition.y + w/8 + Math.sin(Date.now() * 0.005) * 5;
+        const intensity = Math.sin(Date.now() * 0.01) * 0.2 + 0.8;
+        treasure.group.children.forEach(child => {
+          if (child.material && !treasure.treasureContents) {
+            child.material.emissive.setRGB(intensity * 0.1, intensity * 0.1, 0);
+          }
+        });
+        break;
+        
+      case TREASURE_STATES.PREPARING:
+      case TREASURE_STATES.OPENING:
+        // 準備中・開封中は位置固定（アニメーション関数で制御）
+        break;
+        
+      case TREASURE_STATES.OPENED:
+        // 開いた宝箱は浮遊
+        treasure.group.position.y = treasure.originalPosition.y + w/4 + Math.sin(Date.now() * 0.003) * 10;
+        
+        // 金貨の回転
+        if (treasure.treasureContents && treasure.treasureContents.coins) {
+          treasure.treasureContents.coins.forEach((coin, index) => {
+            coin.rotation.y += 0.02 + index * 0.005;
+            coin.rotation.x += 0.01;
+          });
+        }
+        
+        // パーティクルの回転
+        if (treasure.treasureContents && treasure.treasureContents.particles) {
+          treasure.treasureContents.particles.rotation.y += 0.01;
+        }
+        break;
+    }
+  });
+  
+  camera.position.set((p.x-f.x/2)*w,0,(p.z-f.z/2)*w);
+  camera.lookAt((p.x+f.x)*w,0,(p.z+f.z)*w);
+  light.position.copy(camera.position);
+  
+  update2D();
+  
+  renderer.render(scene,camera);
+  window.requestAnimationFrame(update);
+}
+</script>
+<style>
+body {
+  margin: 0;
+  padding: 10px;
+  font-family: Arial, sans-serif;
+  overflow-x: hidden;
+}
+
+#render3D, #render2D {
+  border: 2px solid #333;
+}
+
+#gameInfo {
+  font-family: Arial, sans-serif;
+  margin: 8px 0;
+  padding: 8px;
+  background-color: #f0f0f0;
+  border-radius: 5px;
+}
+
+#status {
+  font-weight: bold;
+  margin: 8px 0;
+  color: #333;
+  font-size: 14px;
+}
+
+.treasure-info {
+  display: inline-block;
+  margin: 0 15px;
+  font-size: 16px;
+}
+
+.controls {
+  margin: 8px 0;
+  padding: 8px;
+  background-color: #e8e8e8;
+  border-radius: 5px;
+  font-size: 14px;
+}
+
+.control-buttons {
+  display: flex;
+  gap: 10px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+
+.control-button {
+  padding: 6px 12px;
+  background-color: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.control-button:hover {
+  background-color: #45a049;
+}
+
+.control-button.mapping {
+  background-color: #2196F3;
+}
+
+.control-button.mapping:hover {
+  background-color: #1976D2;
+}
+
+.game-layout {
+  display: flex;
+  gap: 15px;
+  align-items: flex-start;
+  max-width: 1300px;
+  margin: 0 auto;
+}
+
+.main-game-area {
+  flex: 1;
+}
+
+.mapping-area {
+  flex: 0 0 270px;
+  background-color: #f8f8f8;
+  padding: 10px;
+  border-radius: 8px;
+  border: 2px solid #ddd;
+  display: none;
+}
+
+.mapping-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #333;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.mapping-legend {
+  font-size: 11px;
+  color: #666;
+  margin-top: 8px;
+  line-height: 1.3;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  margin: 3px 0;
+}
+
+.legend-color {
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  border-radius: 2px;
+  border: 1px solid #999;
+}
+
+.legend-path { background-color: #87CEEB; }
+.legend-player { background-color: #FF4444; }
+.legend-treasure-found { background-color: #FFD700; }
+.legend-treasure-unfound { background-color: #8B4513; }
+
+#startScreen {
+  text-align: center;
+  padding: 30px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 15px;
+  margin: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+  max-width: 1300px;
+  margin: 10px auto;
+}
+
+#startScreen h1 {
+  font-size: 36px;
+  margin-bottom: 15px;
+  text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+}
+
+#startScreen p {
+  font-size: 16px;
+  margin-bottom: 20px;
+  line-height: 1.4;
+}
+
+.level-selection {
+  margin: 20px 0;
+}
+
+.level-selection h2 {
+  font-size: 24px;
+  margin-bottom: 15px;
+  color: #FFD700;
+}
+
+.level-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 15px;
+  margin-bottom: 15px;
+  flex-wrap: wrap;
+}
+
+.level-button {
+  font-size: 16px;
+  padding: 12px 20px;
+  background: linear-gradient(45deg, #4CAF50, #45a049);
+  color: white;
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+}
+
+.level-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+}
+
+.level-button.selected {
+  background: linear-gradient(45deg, #FFD700, #FFA500);
+  color: #8B4513;
+  box-shadow: 0 4px 15px rgba(255, 215, 0, 0.5);
+}
+
+.level-info {
+  font-size: 14px;
+  margin-top: 8px;
+  color: #E0E0E0;
+}
+
+.selected-level {
+  font-size: 18px;
+  margin: 15px 0;
+  color: #FFD700;
+  font-weight: bold;
+}
+
+#startButton {
+  font-size: 20px;
+  padding: 12px 30px;
+  background: linear-gradient(45deg, #FFD700, #FFA500);
+  color: #8B4513;
+  border: none;
+  border-radius: 40px;
+  cursor: pointer;
+  font-weight: bold;
+  text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+  box-shadow: 0 5px 15px rgba(255,215,0,0.4);
+  transition: all 0.3s ease;
+}
+
+#startButton:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(255,215,0,0.6);
+}
+
+#startButton:active {
+  transform: translateY(0);
+}
+
+#gameScreen {
+  display: none;
+  max-width: 1300px;
+  margin: 0 auto;
+}
+
+.treasure-message {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: linear-gradient(45deg, #FFD700, #FFA500);
+  color: #8B4513;
+  font-size: 28px;
+  font-weight: bold;
+  font-family: 'Arial', sans-serif;
+  padding: 15px 30px;
+  border-radius: 15px;
+  border: 4px solid #8B4513;
+  box-shadow: 0 0 30px rgba(255, 215, 0, 0.8);
+  z-index: 1000;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.5);
+  transition: all 0.5s ease-out;
+  text-align: center;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.treasure-message.show {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+  animation: treasure-bounce 0.6s ease-out;
+}
+
+@keyframes treasure-bounce {
+  0% { transform: translate(-50%, -50%) scale(0.5); }
+  50% { transform: translate(-50%, -50%) scale(1.1); }
+  100% { transform: translate(-50%, -50%) scale(1); }
+}
+
+.treasure-message::before {
+  content: '';
+  position: absolute;
+  top: -10px;
+  left: -10px;
+  right: -10px;
+  bottom: -10px;
+  background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+  border-radius: 20px;
+  animation: sparkle 2s infinite;
+  z-index: -1;
+}
+
+@keyframes sparkle {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+#matchingGameScreen {
+  display: none;
+  font-family: 'Arial', sans-serif;
+  background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 50%, #fecfef 100%);
+  margin: 0;
+  padding: 15px;
+  min-height: 100vh;
+  border-radius: 15px;
+}
+
+.matching-game-container {
+  background: white;
+  border-radius: 25px;
+  padding: 25px;
+  box-shadow: 0 15px 35px rgba(255,105,180,0.3);
+  max-width: 600px;
+  width: 100%;
+  text-align: center;
+  border: 4px solid #ffb3d9;
+  margin: 0 auto;
+}
+
+.matching-game-container h1 {
+  color: #ff6b9d;
+  margin-bottom: 20px;
+  font-size: 2.2em;
+  text-shadow: 2px 2px 4px rgba(255,105,180,0.3);
+}
+
+.matching-target-number {
+  font-size: 3em;
+  color: #ff4757;
+  margin: 15px 0;
+  font-weight: bold;
+  text-shadow: 2px 2px 4px rgba(255,71,87,0.3);
+}
+
+.matching-number-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 15px;
+  margin: 25px 0;
+  max-width: 500px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.matching-number-card {
+  background: linear-gradient(135deg, #ffeaa7, #fab1a0);
+  border: 3px solid #ff9ff3;
+  border-radius: 15px;
+  padding: 15px;
+  font-size: 2em;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  user-select: none;
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 12px rgba(255,105,180,0.2);
+}
+
+.matching-number-card:hover {
+  transform: translateY(-6px) scale(1.05);
+  box-shadow: 0 12px 20px rgba(255,105,180,0.4);
+}
+
+.matching-number-card.matching-selected {
+  background: linear-gradient(135deg, #74b9ff, #0984e3);
+  color: white;
+  border-color: #0984e3;
+  transform: scale(1.1);
+  box-shadow: 0 8px 16px rgba(116,185,255,0.5);
+}
+
+.matching-number-card.matching-matched {
+  background: linear-gradient(135deg, #00b894, #00a085);
+  color: white;
+  animation: matchingMatchAnimation 0.8s ease;
+}
+
+@keyframes matchingMatchAnimation {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.2) rotate(5deg); }
+  60% { transform: scale(1.2) rotate(-5deg); }
+  100% { transform: scale(0) rotate(0deg); opacity: 0; }
+}
+
+.matching-clear-message {
+  display: none;
+  background: linear-gradient(135deg, #00b894, #00a085);
+  color: white;
+  padding: 20px;
+  border-radius: 20px;
+  margin: 20px 0;
+  font-size: 1.5em;
+  font-weight: bold;
+  animation: matchingCelebration 1.5s ease;
+  box-shadow: 0 8px 16px rgba(0,184,148,0.3);
+}
+
+@keyframes matchingCelebration {
+  0% { transform: scale(0.5) rotate(-5deg); opacity: 0; }
+  50% { transform: scale(1.1) rotate(5deg); }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+.matching-instructions {
+  background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+  padding: 20px;
+  border-radius: 15px;
+  margin: 20px 0;
+  font-size: 1.1em;
+  color: #ff4757;
+  font-weight: bold;
+  border: 3px solid #ffb3d9;
+}
+
+.matching-score-info {
+  display: flex;
+  justify-content: space-between;
+  margin: 20px 0;
+  font-size: 1.2em;
+  color: #ff4757;
+  font-weight: bold;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.matching-emoji {
+  font-size: 1.3em;
+  margin: 0 8px;
+}
+
+.matching-cute-decoration {
+  font-size: 1.5em;
+  color: #ff69b4;
+  margin: 0 10px;
+}
+
 /* レスポンシブ対応 */
 @media (max-width: 1400px) {
   .game-layout {
