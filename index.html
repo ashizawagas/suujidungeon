@@ -61,18 +61,12 @@ let mapCtx;
 let mapCanvasSize = 250;
 let showMapping = false;
 
-// アニメーション関連の変数
-let activeAnimations = new Map();
-
 import * as THREE from "three";
 import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js";
 
-// 宝箱の状態定義
+// 宝箱の状態定義（シンプル化）
 const TREASURE_STATES = {
   UNDISCOVERED: 'undiscovered',
-  FOUND: 'found',
-  PREPARING: 'preparing',
-  OPENING: 'opening',
   OPENED: 'opened'
 };
 
@@ -137,8 +131,6 @@ function initializeGame() {
   
   showMapping = false;
   updateMappingVisibility();
-  
-  activeAnimations.clear();
   
   generateMaze();
   updateMappingDisplay();
@@ -268,7 +260,7 @@ function createTreasureBox(x, y) {
     originalLidRotation: lid.rotation.clone(),
     originalDecorRotation: decor.rotation.clone(),
     treasureContents: null,
-    colorChanged: false // 色変更フラグを追加
+    decorRemoved: false // ★★★ 追加: 装飾削除フラグ ★★★
   };
   
   treasures.push(treasureData);
@@ -277,186 +269,54 @@ function createTreasureBox(x, y) {
   return treasureData;
 }
 
-// 宝箱開封シーケンス（修正版）
-function startTreasureOpeningSequence(treasure) {
-  if (treasure.state !== TREASURE_STATES.FOUND) {
-    console.warn("宝箱の状態が不正です:", treasure.state);
-    return;
-  }
+// ★★★ 修正: 宝箱を即座に開封状態にする関数（装飾削除機能追加） ★★★
+function openTreasureInstantly(treasure) {
+  console.log("=== 宝箱を即座に開封 ===", treasure.x, treasure.y);
   
-  console.log("=== 宝箱開封シーケンス開始 ===", treasure.x, treasure.y);
-  treasure.state = TREASURE_STATES.PREPARING;
-  
-  // 既存のアニメーションを停止
-  if (activeAnimations.has(treasure)) {
-    clearTimeout(activeAnimations.get(treasure));
-  }
-  
-  // 位置を固定
-  treasure.group.position.copy(treasure.originalPosition);
-  treasure.group.position.y = w/4;
-  
-  // フェーズ1: 発見エフェクト（1秒）
-  showDiscoveryEffect(treasure);
-  
-  // フェーズ2: 色変更（2秒後）
-  const phase2Timer = setTimeout(() => {
-    console.log("色変更フェーズ開始");
-    changeTreasureColor(treasure);
-    
-    // フェーズ3: 開封アニメーション（0.5秒後）
-    const phase3Timer = setTimeout(() => {
-      console.log("開封アニメーション開始");
-      treasure.state = TREASURE_STATES.OPENING;
-      startOpeningAnimation(treasure);
-    }, 500);
-    
-    activeAnimations.set(treasure, phase3Timer);
-  }, 2000);
-  
-  activeAnimations.set(treasure, phase2Timer);
-}
-
-// 発見エフェクト
-function showDiscoveryEffect(treasure) {
-  console.log("発見エフェクト開始");
-  
-  // 光る効果
-  treasure.group.children.forEach(child => {
-    if (child.material) {
-      child.material.emissive = new THREE.Color(0x444400);
-    }
-  });
-  
-  // スケールアニメーション
-  const originalScale = treasure.group.scale.clone();
-  treasure.group.scale.set(1.3, 1.3, 1.3);
-  
-  setTimeout(() => {
-    treasure.group.scale.copy(originalScale);
-    console.log("発見エフェクト完了");
-  }, 1000);
-}
-
-// 宝箱の色を変更（新規追加）
-function changeTreasureColor(treasure) {
-  if (treasure.colorChanged) return;
-  
-  console.log("宝箱の色を変更");
-  treasure.colorChanged = true;
+  treasure.state = TREASURE_STATES.OPENED;
   
   // 宝箱の色を明るくする
-  treasure.box.material.color.setHex(0xCD853F); // より明るい茶色
-  treasure.box.material.emissive.setHex(0x222200); // 少し光らせる
+  treasure.box.material.color.setHex(0xCD853F);
+  treasure.box.material.emissive.setHex(0x444400);
   
-  // 蓋の色も少し明るくする
-  treasure.lid.material.color.setHex(0xB8860B); // ダークゴールデンロッド
+  // 蓋の色も明るくする
+  treasure.lid.material.color.setHex(0xB8860B);
+  treasure.lid.material.emissive.setHex(0x222200);
   
-  // 装飾をより光らせる
-  treasure.decor.material.emissive.setHex(0x333300);
-}
-
-// 開封アニメーション
-function startOpeningAnimation(treasure) {
-  if (treasure.state !== TREASURE_STATES.OPENING) {
-    console.warn("開封アニメーション: 状態が不正です", treasure.state);
-    return;
+  // 蓋を開いた状態にする
+  treasure.lid.rotation.x = -Math.PI/2;
+  treasure.lid.position.set(0, treasure.originalLidPosition.y + w/16, -w/8);
+  
+  // ★★★ 新機能: 装飾を削除 ★★★
+  if (treasure.decor && !treasure.decorRemoved) {
+    console.log("装飾を削除");
+    treasure.group.remove(treasure.decor);
+    
+    // メモリ解放
+    if (treasure.decor.geometry) {
+      treasure.decor.geometry.dispose();
+    }
+    if (treasure.decor.material) {
+      treasure.decor.material.dispose();
+    }
+    
+    treasure.decorRemoved = true;
+    treasure.decor = null; // 参照をクリア
   }
   
-  const animationData = {
-    treasure: treasure,
-    startTime: Date.now(),
-    duration: 3000,
-    phase: 'lid_opening'
-  };
-  
-  // 宝箱の中身を事前に作成
+  // 宝箱の中身を作成
   createTreasureContents(treasure);
   
-  // アニメーションループを開始
-  animateOpening(animationData);
-}
-
-// アニメーションループ
-function animateOpening(animationData) {
-  const { treasure, startTime, duration } = animationData;
-  const elapsed = Date.now() - startTime;
-  const progress = Math.min(elapsed / duration, 1);
-  
-  if (treasure.state !== TREASURE_STATES.OPENING) {
-    console.log("アニメーション中断: 状態変更", treasure.state);
-    return;
-  }
-  
-  if (animationData.phase === 'lid_opening') {
-    // 蓋を開く（0-60%）
-    const lidProgress = Math.min(progress / 0.6, 1);
-    const easeProgress = easeOutBounce(lidProgress);
+  // 中身を表示状態にする
+  if (treasure.treasureContents) {
+    treasure.treasureContents.coins.forEach((coin, index) => {
+      coin.scale.set(1, 1, 1);
+      coin.position.copy(treasure.treasureContents.originalPositions[index]);
+    });
     
-    // 蓋の回転
-    treasure.lid.rotation.x = -Math.PI/2 * easeProgress;
-    treasure.lid.position.set(
-      0,
-      treasure.originalLidPosition.y + (w/16) * easeProgress,
-      -w/8 * easeProgress
-    );
-    
-    // 装飾も一緒に移動
-    treasure.decor.rotation.x = -Math.PI/2 * easeProgress;
-    treasure.decor.position.set(
-      0,
-      treasure.originalDecorPosition.y + (w/8) * easeProgress,
-      -w/8 * easeProgress
-    );
-    
-    if (progress >= 0.6) {
-      animationData.phase = 'contents_appearing';
-      console.log("中身出現フェーズ開始");
+    if (treasure.treasureContents.particles) {
+      treasure.treasureContents.particles.material.opacity = 0.8;
     }
-  }
-  
-  if (animationData.phase === 'contents_appearing') {
-    // 中身出現（60-100%）
-    const contentsProgress = (progress - 0.6) / 0.4;
-    
-    if (treasure.treasureContents) {
-      treasure.treasureContents.coins.forEach((coin, index) => {
-        const delay = index * 0.3;
-        const coinProgress = Math.max(0, Math.min(1, (contentsProgress - delay) / (1 - delay)));
-        const scale = easeOutBounce(coinProgress);
-        coin.scale.set(scale, scale, scale);
-        
-        // 落下アニメーション
-        const fallProgress = easeOutBounce(coinProgress);
-        coin.position.y = treasure.treasureContents.originalPositions[index].y + (w/4) * (1 - fallProgress);
-      });
-      
-      // パーティクル
-      if (treasure.treasureContents.particles) {
-        treasure.treasureContents.particles.material.opacity = contentsProgress * 0.8;
-      }
-    }
-  }
-  
-  // アニメーション継続または完了
-  if (progress < 1) {
-    requestAnimationFrame(() => animateOpening(animationData));
-  } else {
-    completeOpening(treasure);
-  }
-}
-
-// 開封完了（修正版）
-function completeOpening(treasure) {
-  console.log("=== 宝箱開封完了 ===", treasure.x, treasure.y);
-  treasure.state = TREASURE_STATES.OPENED;
-  activeAnimations.delete(treasure);
-  
-  // 最終的な色調整（既に色変更済みなので微調整のみ）
-  if (treasure.colorChanged) {
-    treasure.box.material.emissive.setHex(0x444400); // より強い発光
-    treasure.lid.material.emissive.setHex(0x222200);
-    treasure.decor.material.emissive.setHex(0x555500);
   }
 }
 
@@ -525,19 +385,6 @@ function createTreasureContents(treasure) {
   };
 }
 
-// イージング関数
-function easeOutBounce(t) {
-  if (t < 1 / 2.75) {
-    return 7.5625 * t * t;
-  } else if (t < 2 / 2.75) {
-    return 7.5625 * (t -= 1.5 / 2.75) * t + 0.75;
-  } else if (t < 2.5 / 2.75) {
-    return 7.5625 * (t -= 2.25 / 2.75) * t + 0.9375;
-  } else {
-    return 7.5625 * (t -= 2.625 / 2.75) * t + 0.984375;
-  }
-}
-
 // メッセージを表示する関数
 function showMessage(text, duration = 3000) {
   if (messageElement) {
@@ -569,16 +416,27 @@ function showMessage(text, duration = 3000) {
   }, duration);
 }
 
-// 宝箱を見つけた時のアニメーション
+// 宝箱発見時の処理（イベント順序調整済み）
 function findTreasure(treasure) {
   if (treasure.state !== TREASURE_STATES.UNDISCOVERED) return;
   
+  console.log("=== 宝箱発見 ===", treasure.x, treasure.y);
+  
+  // 1. 即座に「たからばこ はっけん」メッセージを表示
+  showMessage('🎉 たからばこ はっけん！ 🎉', 2500);
+  
+  // 2. 宝箱データを保存
   currentTreasureData = treasure;
-  startMatchingGame();
+  
+  // 3. 2秒後に数字マッチングゲームを開始
+  setTimeout(() => {
+    startMatchingGame();
+  }, 2000);
 }
 
 // 数字マッチングゲームを開始
 function startMatchingGame() {
+  console.log("=== 数字マッチングゲーム開始 ===");
   gameState = "matching";
   matchingTargetNumber = Math.floor(Math.random() * 11) + 10;
   
@@ -589,7 +447,7 @@ function startMatchingGame() {
   matchingShowGameScreen();
 }
 
-// 数字マッチングゲームから戻る
+// 数字マッチングゲームから戻る（修正版）
 function returnFromMatchingGame() {
   console.log("=== 数字マッチングゲーム完了 ===");
   
@@ -598,26 +456,18 @@ function returnFromMatchingGame() {
   document.getElementById("matchingGameScreen").style.display = 'none';
   document.getElementById("gameScreen").style.display = 'block';
   
-  // 宝箱発見処理
+  // 宝箱を即座に開封状態にする
   if (currentTreasureData && currentTreasureData.state === TREASURE_STATES.UNDISCOVERED) {
-    console.log("宝箱を発見状態に変更:", currentTreasureData.x, currentTreasureData.y);
+    console.log("宝箱を開封状態に変更:", currentTreasureData.x, currentTreasureData.y);
     
-    // 状態を発見済みに変更
-    currentTreasureData.state = TREASURE_STATES.FOUND;
+    // 即座に開封状態にする
+    openTreasureInstantly(currentTreasureData);
     foundTreasures++;
-    
-    // メッセージ表示
-    showMessage('🎉 たからばこ はっけん！ 🎉', 2500);
     
     // UI更新
     document.getElementById("found").innerText = foundTreasures;
     document.getElementById("total").innerText = totalTreasures;
     updateMappingDisplay();
-    
-    // 1秒後に開封シーケンス開始
-    setTimeout(() => {
-      startTreasureOpeningSequence(currentTreasureData);
-    }, 1000);
     
     // 全ての宝箱を見つけた場合
     if (foundTreasures >= totalTreasures && !gameCleared) {
@@ -644,7 +494,7 @@ function returnFromMatchingGame() {
         setTimeout(() => {
           returnToStart();
         }, 5000);
-      }, 5000); // 開封完了を待つため時間を延長
+      }, 1000);
     }
     
     currentTreasureData = null;
@@ -846,7 +696,7 @@ function updateMappingDisplay() {
     const treasureX = treasure.x * scale + scale/2;
     const treasureY = treasure.y * scale + scale/2;
     
-    if (treasure.state === TREASURE_STATES.OPENED || treasure.state === TREASURE_STATES.FOUND || treasure.state === TREASURE_STATES.PREPARING || treasure.state === TREASURE_STATES.OPENING) {
+    if (treasure.state === TREASURE_STATES.OPENED) {
       mapCtx.fillStyle = '#FFD700';
       drawStar(mapCtx, treasureX, treasureY, scale/3);
     } else if (visitedMap[treasure.x][treasure.y]) {
@@ -906,7 +756,7 @@ function drawStar(ctx, x, y, radius) {
   ctx.fill();
 }
 
-// 2D表示を更新
+// ★★★ 修正: 2D表示を更新（装飾削除に対応） ★★★
 function update2D() {
   if (!show2D) return;
   
@@ -928,6 +778,7 @@ function update2D() {
   
   treasures.forEach(treasure => {
     if (treasure.state === TREASURE_STATES.OPENED) {
+      // 開封済み宝箱の表示
       ctx2D.fillStyle = '#FFD700';
       ctx2D.beginPath();
       ctx2D.arc(treasure.x * scale + scale/2, treasure.y * scale + scale/2, scale/2.5, 0, 2 * Math.PI);
@@ -942,13 +793,8 @@ function update2D() {
       ctx2D.beginPath();
       ctx2D.arc(treasure.x * scale + scale/2, treasure.y * scale + scale/2, scale/8, 0, 2 * Math.PI);
       ctx2D.fill();
-    } else if (treasure.state === TREASURE_STATES.FOUND || treasure.state === TREASURE_STATES.PREPARING || treasure.state === TREASURE_STATES.OPENING) {
-      ctx2D.fillStyle = treasure.colorChanged ? '#CD853F' : '#8B4513';
-      ctx2D.fillRect(treasure.x * scale + scale/4, treasure.y * scale + scale/4, scale/2, scale/2);
-      ctx2D.strokeStyle = '#FFD700';
-      ctx2D.lineWidth = 2;
-      ctx2D.strokeRect(treasure.x * scale + scale/4, treasure.y * scale + scale/4, scale/2, scale/2);
     } else {
+      // 未発見宝箱の表示
       ctx2D.fillStyle = '#8B4513';
       ctx2D.fillRect(treasure.x * scale + scale/4, treasure.y * scale + scale/4, scale/2, scale/2);
     }
@@ -1063,6 +909,7 @@ const dig = (x,y) => {
   }
 }
 
+// ★★★ 修正: メインアップデート関数（装飾削除に対応） ★★★
 const update = () => {
   if (gameState !== "playing") {
     renderer.render(scene,camera);
@@ -1113,28 +960,12 @@ const update = () => {
     }
   }
   
-  // 宝箱のアニメーション（状態ベース）
+  // 宝箱のアニメーション（装飾削除に対応）
   treasures.forEach(treasure => {
     switch(treasure.state) {
       case TREASURE_STATES.UNDISCOVERED:
         // 未発見の宝箱は回転
         treasure.group.rotation.y += 0.01;
-        break;
-        
-      case TREASURE_STATES.FOUND:
-        // 発見済みの宝箱は軽く光る
-        treasure.group.position.y = treasure.originalPosition.y + w/8 + Math.sin(Date.now() * 0.005) * 5;
-        const intensity = Math.sin(Date.now() * 0.01) * 0.2 + 0.8;
-        treasure.group.children.forEach(child => {
-          if (child.material && !treasure.treasureContents) {
-            child.material.emissive.setRGB(intensity * 0.1, intensity * 0.1, 0);
-          }
-        });
-        break;
-        
-      case TREASURE_STATES.PREPARING:
-      case TREASURE_STATES.OPENING:
-        // 準備中・開封中は位置固定（アニメーション関数で制御）
         break;
         
       case TREASURE_STATES.OPENED:
@@ -1712,7 +1543,7 @@ body {
   </div>
   
   <div class="game-layout">
-    <div class="main-game-area">
+    <div class ="main-game-area">
       <div id="render3D"></div>
       <div id="render2D"></div>
     </div>
@@ -1775,3 +1606,4 @@ body {
 </div>
 </body>
 </html>
+
